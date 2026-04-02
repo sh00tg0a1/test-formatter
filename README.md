@@ -5,9 +5,10 @@
 ## 功能
 
 - `POST /param_formatter`
-  - 根据输入 `backup_type` 返回对应的备份参数模板。
-  - 支持两种类型：`db`、`vm`。
-  - 返回结构为三层嵌套，参数字段总数超过 20。
+  - 输入完整备份参数对象，返回原样对象（echo）。
+  - 输入和输出结构保持一致：`{ xxxx } -> { xxxx }`。
+  - 三层嵌套，参数字段总数超过 20。
+  - 支持两种资源类型校验：`db`、`vm`。
 - `GET /schema`
   - 返回接口 schema（包含请求与响应结构说明）。
 
@@ -21,21 +22,105 @@ go run main.go
 
 ## 接口示例
 
-### 1) 获取 DB 备份参数模板
+### 1) DB 参数 echo（输入即输出）
 
 ```bash
 curl -X POST http://127.0.0.1:8080/param_formatter \
   -H 'Content-Type: application/json' \
-  -d '{"backup_type":"db"}'
+  -d '{
+    "job": {
+      "job_id": "job-10001",
+      "job_name": "nightly-backup",
+      "job_type": "full",
+      "priority": "normal",
+      "tenant_id": "tenant-a",
+      "operator_id": "user-ops-01",
+      "tags": ["prod", "critical", "db"]
+    },
+    "source": {
+      "resource": {
+        "resource_type": "db",
+        "resource_id": "db-001",
+        "resource_name": "orders-mysql",
+        "cluster_id": "",
+        "namespace": "",
+        "host": "10.0.0.21",
+        "port": 3306,
+        "database_name": "orders",
+        "vm_uuid": "",
+        "hypervisor": ""
+      },
+      "auth": {
+        "credential_ref": "credential/default",
+        "auth_mode": "token"
+      }
+    },
+    "target": {
+      "storage": {
+        "provider": "s3",
+        "bucket": "backup-bucket",
+        "path": "/daily",
+        "region": "us-east-1",
+        "storage_class": "standard",
+        "kms_key_id": "kms-key-001"
+      },
+      "retention": {
+        "mode": "days",
+        "keep_last": 30,
+        "expire_after_days": 180
+      }
+    },
+    "policy": {
+      "schedule": {
+        "enabled": true,
+        "type": "cron",
+        "cron_expr": "0 2 * * *",
+        "timezone": "UTC",
+        "start_at": "2026-04-01T02:00:00Z"
+      },
+      "consistency": {
+        "app_consistent": true,
+        "quiesce_fs": true,
+        "pre_script_ref": "script/pre-freeze",
+        "post_script_ref": "script/post-thaw"
+      },
+      "security": {
+        "encrypt_in_transit": true,
+        "encrypt_at_rest": true,
+        "password_protected": false,
+        "password_ref": ""
+      }
+    },
+    "execution": {
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 15
+      },
+      "performance": {
+        "bandwidth_limit_mbps": 500,
+        "parallelism": 8,
+        "dedup": true,
+        "compression": "lz4"
+      },
+      "notification": {
+        "on_success": true,
+        "on_failure": true,
+        "channel": "webhook",
+        "recipient_ref": "notify/ops-webhook"
+      }
+    }
+  }'
 ```
 
-### 2) 获取 VM 备份参数模板
+### 2) VM 参数 echo（输入即输出）
 
 ```bash
 curl -X POST http://127.0.0.1:8080/param_formatter \
   -H 'Content-Type: application/json' \
-  -d '{"backup_type":"vm"}'
+  -d @vm_payload.json
 ```
+
+其中 `vm_payload.json` 与上面的结构一致，仅将 `source.resource.resource_type` 设置为 `vm`，并按需填写 `cluster_id`、`vm_uuid`、`hypervisor`。
 
 ### 3) 获取 schema
 

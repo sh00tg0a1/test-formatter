@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
 )
 
 type BackupType string
@@ -13,10 +12,6 @@ const (
 	BackupTypeDB BackupType = "db"
 	BackupTypeVM BackupType = "vm"
 )
-
-type ParamFormatterRequest struct {
-	BackupType BackupType `json:"backup_type"`
-}
 
 type ParamFormatter struct {
 	Job       JobConfig       `json:"job"`
@@ -45,13 +40,13 @@ type ResourceInfo struct {
 	ResourceType string `json:"resource_type"`
 	ResourceID   string `json:"resource_id"`
 	ResourceName string `json:"resource_name"`
-	ClusterID    string `json:"cluster_id,omitempty"`
-	Namespace    string `json:"namespace,omitempty"`
-	Host         string `json:"host,omitempty"`
-	Port         int    `json:"port,omitempty"`
-	DatabaseName string `json:"database_name,omitempty"`
-	VMUUID       string `json:"vm_uuid,omitempty"`
-	Hypervisor   string `json:"hypervisor,omitempty"`
+	ClusterID    string `json:"cluster_id"`
+	Namespace    string `json:"namespace"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	DatabaseName string `json:"database_name"`
+	VMUUID       string `json:"vm_uuid"`
+	Hypervisor   string `json:"hypervisor"`
 }
 
 type SourceAuth struct {
@@ -148,118 +143,51 @@ func paramFormatterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req ParamFormatterRequest
+	var req ParamFormatter
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json body", http.StatusBadRequest)
 		return
 	}
 
-	backupType := BackupType(strings.ToLower(string(req.BackupType)))
-	if backupType != BackupTypeDB && backupType != BackupTypeVM {
-		http.Error(w, "backup_type must be one of: db, vm", http.StatusBadRequest)
+	if err := validateParamFormatter(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	resp := buildTemplate(backupType)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(req)
 }
 
-func buildTemplate(t BackupType) ParamFormatter {
-	base := ParamFormatter{
-		Job: JobConfig{
-			JobID:      "job-10001",
-			JobName:    "nightly-backup",
-			JobType:    "full",
-			Priority:   "normal",
-			TenantID:   "tenant-a",
-			OperatorID: "user-ops-01",
-			Tags:       []string{"prod", "critical", string(t)},
-		},
-		Source: SourceConfig{
-			Auth: SourceAuth{
-				CredentialRef: "credential/default",
-				AuthMode:      "token",
-			},
-		},
-		Target: TargetConfig{
-			Storage: StorageConfig{
-				Provider:     "s3",
-				Bucket:       "backup-bucket",
-				Path:         "/daily",
-				Region:       "us-east-1",
-				StorageClass: "standard",
-				KMSKeyID:     "kms-key-001",
-			},
-			Retention: RetentionConfig{
-				Mode:            "days",
-				KeepLast:        30,
-				ExpireAfterDays: 180,
-			},
-		},
-		Policy: PolicyConfig{
-			Schedule: ScheduleConfig{
-				Enabled:  true,
-				Type:     "cron",
-				CronExpr: "0 2 * * *",
-				Timezone: "UTC",
-				StartAt:  "2026-04-01T02:00:00Z",
-			},
-			Consistency: ConsistencyConfig{
-				AppConsistent: true,
-				QuiesceFS:     true,
-				PreScriptRef:  "script/pre-freeze",
-				PostScriptRef: "script/post-thaw",
-			},
-			Security: SecurityConfig{
-				EncryptInTransit: true,
-				EncryptAtRest:    true,
-				PasswordProtect:  false,
-				PasswordRef:      "",
-			},
-		},
-		Execution: ExecutionConfig{
-			Retry: RetryConfig{
-				MaxAttempts:    3,
-				BackoffSeconds: 15,
-			},
-			Performance: PerformanceConfig{
-				BandwidthLimitMbps: 500,
-				Parallelism:        8,
-				Dedup:              true,
-				Compression:        "lz4",
-			},
-			Notification: NotificationConfig{
-				OnSuccess:    true,
-				OnFailure:    true,
-				Channel:      "webhook",
-				RecipientRef: "notify/ops-webhook",
-			},
-		},
+func validateParamFormatter(req ParamFormatter) error {
+	if req.Source.Resource.ResourceType != string(BackupTypeDB) && req.Source.Resource.ResourceType != string(BackupTypeVM) {
+		return httpError("source.resource.resource_type must be one of: db, vm")
 	}
 
-	if t == BackupTypeDB {
-		base.Source.Resource = ResourceInfo{
-			ResourceType: "db",
-			ResourceID:   "db-001",
-			ResourceName: "orders-mysql",
-			Host:         "10.0.0.21",
-			Port:         3306,
-			DatabaseName: "orders",
-		}
-	} else {
-		base.Source.Resource = ResourceInfo{
-			ResourceType: "vm",
-			ResourceID:   "vm-001",
-			ResourceName: "billing-vm-01",
-			ClusterID:    "cluster-a",
-			Namespace:    "prod",
-			VMUUID:       "420e9f44-5f11-4f23-9713-40fbb1f66fb1",
-			Hypervisor:   "kvm",
+	if req.Source.Resource.ResourceType == string(BackupTypeDB) {
+		if req.Source.Resource.Host == "" || req.Source.Resource.Port <= 0 || req.Source.Resource.DatabaseName == "" {
+			return httpError("for db type, host/port/database_name are required")
 		}
 	}
 
-	return base
+	if req.Source.Resource.ResourceType == string(BackupTypeVM) {
+		if req.Source.Resource.ClusterID == "" || req.Source.Resource.VMUUID == "" || req.Source.Resource.Hypervisor == "" {
+			return httpError("for vm type, cluster_id/vm_uuid/hypervisor are required")
+		}
+	}
+
+	return nil
+}
+
+func httpError(msg string) error {
+	return &requestError{Message: msg}
+}
+
+type requestError struct {
+	Message string
+}
+
+func (e *requestError) Error() string {
+	return e.Message
 }
 
 func schemaHandler(w http.ResponseWriter, r *http.Request) {
@@ -274,16 +202,9 @@ func schemaHandler(w http.ResponseWriter, r *http.Request) {
 		"type":    "object",
 		"endpoints": map[string]any{
 			"POST /param_formatter": map[string]any{
-				"description": "根据 backup_type 返回对应的三层嵌套备份参数模板",
+				"description": "输入完整参数对象并原样返回（echo），输入和输出结构一致",
 				"request": map[string]any{
-					"type":     "object",
-					"required": []string{"backup_type"},
-					"properties": map[string]any{
-						"backup_type": map[string]any{
-							"type": "string",
-							"enum": []string{"db", "vm"},
-						},
-					},
+					"$ref": "#/definitions/ParamFormatter",
 				},
 				"response": map[string]any{
 					"$ref": "#/definitions/ParamFormatter",
